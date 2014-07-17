@@ -106,6 +106,19 @@ available with all schedulers.
     ``False`` and only applies when ``fileIsImportant`` is
     given.
 
+``mergeChanges``
+    By default, when ``treeStableTimer`` expires, the scheduler adds a
+    single build request referencing all changes which passed previous
+    filters.
+
+    The ``mergeChanges`` callable allows to split those changes in
+    multiple build requests. It takes one argument, a list of Change
+    instances, and return a list of change IDs taken from the given
+    list. Each returned ID defines a build request which will reference
+    this ID and any precending one. Remaining IDs (either after the last
+    returned ID, or all IDs if the callable returned an empty list)
+    forms an additional build request.
+
 ``reason``
     A string that will be used as the reason for the triggered build.
 

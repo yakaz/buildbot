@@ -36,11 +36,12 @@ class BaseBasicScheduler(base.BaseScheduler):
     """
 
     compare_attrs = ['treeStableTimer', 'change_filter', 'fileIsImportant',
-                     'onlyImportant', 'reason']
+                     'onlyImportant', 'mergeChanges', 'reason']
 
     _reactor = reactor  # for tests
 
     fileIsImportant = None
+    mergeChanges = None
     reason = ''
 
     class NotSet:
@@ -50,13 +51,17 @@ class BaseBasicScheduler(base.BaseScheduler):
                  builderNames=None, branch=NotABranch, branches=NotABranch,
                  fileIsImportant=None, properties={}, categories=None,
                  reason="The %(classname)s scheduler named '%(name)s' triggered this build",
-                 change_filter=None, onlyImportant=False, **kwargs):
+                 change_filter=None, onlyImportant=False, mergeChanges=None,
+                 **kwargs):
         if shouldntBeSet is not self.NotSet:
             config.error(
                 "pass arguments to schedulers using keyword arguments")
         if fileIsImportant and not callable(fileIsImportant):
             config.error(
                 "fileIsImportant must be a callable")
+        if mergeChanges and not callable(mergeChanges):
+            config.error(
+                "mergeChanges must be a callable")
 
         # initialize parent classes
         base.BaseScheduler.__init__(self, name, builderNames, properties, **kwargs)
@@ -68,6 +73,8 @@ class BaseBasicScheduler(base.BaseScheduler):
         self.change_filter = self.getChangeFilter(branch=branch,
                                                   branches=branches, change_filter=change_filter,
                                                   categories=categories)
+        if mergeChanges is not None:
+            self.mergeChanges = mergeChanges
 
         # the IDelayedCall used to wake up when this scheduler's
         # treeStableTimer expires.
@@ -210,10 +217,43 @@ class BaseBasicScheduler(base.BaseScheduler):
             return
 
         changeids = sorted(classifications.keys())
-        yield self.addBuildsetForChanges(reason=self.reason,
-                                         changeids=changeids)
-
         max_changeid = changeids[-1]  # (changeids are sorted)
+
+        if self.mergeChanges:
+            # Call the user-provided callback with the list of changes
+            # ready to be built.
+            #
+            # The callback returns a list of change IDs: each ID defines
+            # a build request which will include this ID and previous ones.
+            # Remaining IDs (after the last mentionned ID, or all if the
+            # returned list is empty) will form an additional build request.
+            changesList = []
+            for changeid in changeids:
+                chdict = yield self.master.db.changes.getChange(changeid)
+                change = yield changes.Change.fromChdict(self.master, chdict)
+                changesList.append(change)
+
+            top_changeids = sorted(self.mergeChanges(changesList))
+
+            for changeid in top_changeids:
+                try:
+                    i = changeids.index(changeid)
+                except:
+                    # "ID" is either not a valid ID or doesn't belong to
+                    # the changeids list.
+                    log.err("Scheduler %s: Invalid change ID (%s)"
+                            % (self.name, repr(changeid)) +
+                            "returned from mergeChanges callback")
+                    continue
+                partition = changeids[0:i + 1]
+                del changeids[0:i + 1]
+                yield self.addBuildsetForChanges(reason=self.reason,
+                                                 changeids=partition)
+
+        if changeids:
+            yield self.addBuildsetForChanges(reason=self.reason,
+                                             changeids=changeids)
+
         yield self.master.db.schedulers.flushChangeClassifications(
             self.objectid, less_than=max_changeid + 1)
 
